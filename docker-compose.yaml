@@ -1,0 +1,93 @@
+version: "3"
+
+networks:
+  monitoring:
+
+services:
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.45.0
+    restart: unless-stopped
+    command: --docker_only=true --store_container_labels=false
+    ports: ["9081:8080"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [monitoring]
+    privileged: true
+
+  grafana:
+    image: grafana/grafana:8.3.2
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    volumes:
+      - ./datasource.yaml:/etc/grafana/provisioning/datasources/monitoring.yaml
+      - ./dashboards:/etc/grafana/provisioning/dashboards
+      - ./data/grafana:/var/lib/grafana
+    networks: [monitoring]
+    user: "1000:1000"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.30.0
+    restart: unless-stopped
+    ports: ["6831:6831/udp", "6832:6832/udp", "14250:14250", "14269:14269", "16686:16686"]
+    volumes:
+      - ./data/jaeger:/badger
+    networks: [monitoring]
+    mem_limit: 512m
+    environment:
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_KEY=/badger/key
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      - BADGER_SPAN_STORE_TTL=168h0m0s
+    user: "1000:1000"
+
+  loki:
+    image: grafana/loki:2.4.1
+    restart: unless-stopped
+    ports: ["3100:3100"]
+    mem_limit: 512m
+    volumes:
+      - ./loki.yaml:/etc/loki/local-config.yaml
+      - /var/log:/var/log:ro
+      - ./data/loki:/loki
+    networks: [monitoring]
+    user: "1000:1000"
+
+  opentelemetry-collector:
+    image: otel/opentelemetry-collector:0.58.0
+    restart: unless-stopped
+    command: --config=/conf/otel-collector.config.yaml
+    ports: ["9464:9464", "55680:55680", "55681:55681"]
+    volumes:
+      - ./otel-collector.yaml:/conf/otel-collector.config.yaml
+    networks: [monitoring]
+
+  prometheus:
+    image: prom/prometheus:v2.31.2
+    restart: unless-stopped
+    command: --config.file=/etc/prometheus/prometheus.yaml --web.route-prefix=/ --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --web.enable-lifecycle --web.enable-admin-api
+    ports: ["3001:9090"]
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml
+      - ./data/prometheus:/prometheus
+    networks: [monitoring]
+    user: "1000:1000"
+    mem_limit: 512m
+
+  vector:
+    image: timberio/vector:0.23.3-alpine
+    restart: unless-stopped
+    ports: ["8383:8383", "8686:8686", "9160:9160", "4545:4545/udp"]
+    volumes:
+      - ./vector.toml:/etc/vector/vector.toml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/logs:/logs
+    networks: [monitoring]
+    depends_on: [loki, prometheus]
+    mem_limit: 100m
+    # environment:
+      # - VECTOR_LOG=debug
